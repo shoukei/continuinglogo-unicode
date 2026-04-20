@@ -1,5 +1,31 @@
 
+About this fork
 
+This is a fork of https://github.com/luvisi/continuinglogo
+modified to work with unicode characters.
+
+```
+	? pr first "あいうえお
+	あ
+	? pr butfirst "あいうえお
+	いうえお
+	? pr last "あいうえお
+	お
+	? pr butlast "あいうえお
+	あいうえ
+	? pr count "あいうえお
+	5
+	? pr item 3 "あいうえお
+	う
+	? pr memberp "あ [あ い う]
+	true
+	? pr memberp "か [あ い う]
+	false
+	? pr fput "あ [い う え お]
+	あ い う え お
+	? pr lput "お [あ い う え]
+	あ い う え お
+```
 ContinuingLogo
 
 ContinuingLogo is a Logo interpreter that is mostly compatible with
