@@ -230,8 +230,9 @@ bool ContinuingLogoApp::OnInit()
     /* Attempt to move until stopped by a condition. */
     Bind(MOVEUNTIL, &ContinuingLogoApp::OnMoveUntil, this); 
 
-    /* Repaint the canvas.  Sent after turtle state changes. */
-    Bind(wxEVT_PAINT, &ContinuingLogoApp::OnPaint, this); 
+    /* Repaint the canvas.  Sent after turtle state changes.
+       NOTE: canvas paint is handled by OnPaintCanvas bound to canvas directly,
+       not at the app level. */
 
     /* Fetch the x coordinate of the turtle. */
     Bind(XCOR, &ContinuingLogoApp::OnXcor, this); 
@@ -402,14 +403,15 @@ bool ContinuingLogoApp::OnInit()
     topsizer->Add(column, 1, wxALL | wxEXPAND);
 
     /* Text control for displaying output from the interpreter thread.
-       Note the wxTE_READONLY.  The user cannot edit this.  It only gets new
-       content from the interpreter. */
+       We avoid wxTE_READONLY because on macOS it also blocks programmatic
+       writes. Instead we use SetEditable(false) which only blocks user input. */
     text = new wxTextCtrl(panel,
                           wxID_ANY,
                           wxEmptyString,
                           wxDefaultPosition,
                           wxDefaultSize,
-                          wxTE_MULTILINE | wxTE_READONLY);
+                          wxTE_MULTILINE);
+    text->SetEditable(false);
     column->Add(text, 1, wxALL | wxEXPAND);
 
     /* inputrow holds the prompt and the input control. */
@@ -722,8 +724,7 @@ void ContinuingLogoApp::OnZeroPosition(wxCommandEvent& event) {
 
 /* The interpreter wants to add text to the output control. */
 void ContinuingLogoApp::OnPrintText(wxCommandEvent& event) {
-    *text << event.GetString();
-    panel->Layout();
+    text->AppendText(event.GetString());
 }
 
 /* Handle the user pressing enter in line mode. */
