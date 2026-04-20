@@ -43,6 +43,58 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+
+/* UTF-8 helper functions.
+ *
+ * Logo words are stored as raw UTF-8 byte strings.  The byte length of a
+ * name is stored in u.name.length, but Logo operations like FIRST, BF,
+ * LAST, BL, and COUNT must work in terms of Unicode *characters*, not bytes.
+ *
+ * UTF-8 encoding rules:
+ *   0xxxxxxx              1-byte char  (ASCII)
+ *   110xxxxx 10xxxxxx     2-byte char
+ *   1110xxxx 10xxxxxx...  3-byte char
+ *   11110xxx 10xxxxxx...  4-byte char
+ *   10xxxxxx              continuation byte (not a char start)
+ */
+
+/* Return the byte length of the UTF-8 character whose first byte is c. */
+static int utf8_char_byte_len(unsigned char c) {
+    if (c < 0x80) return 1;          /* ASCII */
+    if ((c & 0xE0) == 0xC0) return 2;
+    if ((c & 0xF0) == 0xE0) return 3;
+    if ((c & 0xF8) == 0xF0) return 4;
+    return 1; /* malformed: treat as 1 byte so we always make progress */
+}
+
+/* Count the number of Unicode characters in the byte string s[0..len). */
+static int utf8_char_count(const char *s, int len) {
+    int count = 0, i = 0;
+    while (i < len) {
+        i += utf8_char_byte_len((unsigned char)s[i]);
+        count++;
+    }
+    return count;
+}
+
+/* Return the byte length of the first Unicode character in s[0..len).
+   Returns 0 if len == 0. */
+static int utf8_first_char_len(const char *s, int len) {
+    if (len <= 0) return 0;
+    int n = utf8_char_byte_len((unsigned char)s[0]);
+    return n <= len ? n : len; /* clamp to available bytes */
+}
+
+/* Return the byte offset of the last Unicode character in s[0..len).
+   Returns -1 if len == 0. */
+static int utf8_last_char_offset(const char *s, int len) {
+    if (len <= 0) return -1;
+    /* Walk backwards over any continuation bytes (10xxxxxx). */
+    int i = len - 1;
+    while (i > 0 && ((unsigned char)s[i] & 0xC0) == 0x80)
+        i--;
+    return i;
+}
 #include <limits.h>
 #include <math.h>
 #include <unistd.h>
@@ -736,11 +788,15 @@ sexpr *first(IC *ic, sexpr *e) {
     }
 
     /* Attempt to convert the argument to a name and return a name
-       containing only the first letter of the argument. */
+       containing only the first character of the argument.
+       Use utf8_first_char_len so that multi-byte Unicode characters
+       (e.g. Japanese hiragana) are treated as a single character. */
     STORE(ic->g, NULL, e, to_name(ic, e));
     if(e->u.name.length >= 1) {
-        STORE(ic->g, NULL, ret, 
-              intern_len_gc(ic, e->u.name.head, e->u.name.start, 1));
+        int char_len = utf8_first_char_len(e->u.name.head + e->u.name.start,
+                                           e->u.name.length);
+        STORE(ic->g, NULL, ret,
+              intern_len_gc(ic, e->u.name.head, e->u.name.start, char_len));
         goto end;
     }
 
@@ -774,12 +830,17 @@ sexpr *butfirst(IC *ic, sexpr *e) {
     }
 
     /* For names, create a new name with everything but the first
-       character. */
+       character.  Use utf8_first_char_len so that a multi-byte Unicode
+       character is skipped as a unit. */
     STORE(ic->g, NULL, e, to_name(ic, e));
     if(e->t == NAME) {
         if(e->u.name.length >= 1) {
+            int char_len = utf8_first_char_len(e->u.name.head + e->u.name.start,
+                                               e->u.name.length);
             STORE(ic->g, NULL, ret,
-                  intern_len_gc(ic, e->u.name.head, e->u.name.start+1, e->u.name.length-1));
+                  intern_len_gc(ic, e->u.name.head,
+                                e->u.name.start + char_len,
+                                e->u.name.length - char_len));
             goto end;
         }
     }
@@ -818,11 +879,14 @@ sexpr *last(IC *ic, sexpr *s) {
     STORE(ic->g, NULL, e, to_name(ic, e));
 
     if(e->u.name.length >= 1) {
+        const char *base = e->u.name.head + e->u.name.start;
+        int last_off = utf8_last_char_offset(base, e->u.name.length);
+        int last_len = e->u.name.length - last_off;
         STORE(ic->g, NULL, ret,
               intern_len_gc(ic,
                             e->u.name.head,
-                            e->u.name.start+e->u.name.length-1,
-                            1));
+                            e->u.name.start + last_off,
+                            last_len));
         goto end;
     }
     bad_argument(ic, car(s));
@@ -863,13 +927,16 @@ sexpr *butlast(IC *ic, sexpr *s) {
     }
 
     /* Try to convert it to a name and create a new name not containing
-       the last character. */
+       the last character.  Use utf8_last_char_offset so that a multi-byte
+       Unicode character at the end is dropped as a unit. */
     STORE(ic->g, NULL, e, to_name(ic, e));
     if(e->u.name.length >= 1) {
+        const char *base = e->u.name.head + e->u.name.start;
+        int last_off = utf8_last_char_offset(base, e->u.name.length);
         STORE(ic->g, NULL, ret, intern_len_gc(ic,
                                 e->u.name.head,
                                 e->u.name.start,
-                                e->u.name.length-1));
+                                last_off));
         goto end;
     }
     bad_argument(ic, car(s));
@@ -2324,8 +2391,9 @@ sexpr *ascii_subr(IC *ic, sexpr *s) {
     return mk_number(ic, arg->u.name.head[arg->u.name.start]);
 }
 
-/* Apply a mapping to every letter in a string.
-   Used in uppercase_subr and lowercase_subr below. */
+/* Apply a mapping to every ASCII letter in a string.
+   Multi-byte UTF-8 continuation bytes and lead bytes are passed through
+   unchanged, since toupper/tolower is only meaningful for ASCII. */
 static sexpr *mapstr(IC *ic, sexpr *s, int (*mapper)(int)) {
     protect_ptr(ic->g, (void **)&s);
     int i;
@@ -2338,8 +2406,11 @@ static sexpr *mapstr(IC *ic, sexpr *s, int (*mapper)(int)) {
     char *buf = (char *)ic_xmalloc(ic, len, mark_cstring);
     protect_ptr(ic->g, (void **) &buf);
 
-    for(i = 0; i < len; i++)
-        buf[i] = (*mapper)(arg->u.name.head[arg->u.name.start+i]);
+    for(i = 0; i < len; i++) {
+        unsigned char byte = (unsigned char)arg->u.name.head[arg->u.name.start+i];
+        /* Only apply the mapper to plain ASCII bytes (< 0x80). */
+        buf[i] = (byte < 0x80) ? (char)(*mapper)(byte) : (char)byte;
+    }
 
     sexpr *ret = intern_len_gc(ic, buf, 0, len);
 
@@ -2511,13 +2582,26 @@ sexpr *item_subr(IC *ic, sexpr *s) {
 
     switch(thing->t) {
         case NAME:
-            if(index < 1 || (unsigned int)index > thing->u.name.length)
+            {
+                /* Walk through the UTF-8 string character by character
+                   until we reach the requested 1-based index. */
+                const char *base = thing->u.name.head + thing->u.name.start;
+                int byte_len = thing->u.name.length;
+                int char_idx = 0, byte_off = 0;
+                while (byte_off < byte_len) {
+                    int clen = utf8_first_char_len(base + byte_off, byte_len - byte_off);
+                    char_idx++;
+                    if (char_idx == index) {
+                        STORE(ic->g, NULL, ret,
+                              intern_len_gc(ic, thing->u.name.head,
+                                                thing->u.name.start + byte_off,
+                                                clen));
+                        goto end;
+                    }
+                    byte_off += clen;
+                }
                 index_range_error(ic, index, thing);
-            STORE(ic->g, NULL, ret,
-                  intern_len_gc(ic, thing->u.name.head,
-                                    thing->u.name.start + index - 1,
-                                    1));
-            goto end;
+            }
         case CONS:
             {
                 int i = index;
@@ -2571,10 +2655,13 @@ sexpr *count_subr(IC *ic, sexpr *s) {
         return mk_number(ic, 0);
 
     if(e->t == NAME)
-        return mk_number(ic, e->u.name.length);
+        return mk_number(ic, utf8_char_count(e->u.name.head + e->u.name.start,
+                                             e->u.name.length));
 
     if(e->t == NUMBER)
-        return mk_number(ic, to_name(ic, e)->u.name.length);
+        return mk_number(ic, utf8_char_count(to_name(ic, e)->u.name.head +
+                                             to_name(ic, e)->u.name.start,
+                                             to_name(ic, e)->u.name.length));
 
     if(e->t == ARRAY)
         return mk_number(ic, e->u.array.length);

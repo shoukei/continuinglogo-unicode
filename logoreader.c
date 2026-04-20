@@ -167,7 +167,8 @@ static int fetch_char_from_wx(logoreader *r) {
         if(res == wxMSGQUEUE_TIMEOUT) {
             ret = EOF;
         } else if(res == wxMSGQUEUE_NO_ERROR) {
-            const char *cp = s.c_str();
+            const wxScopedCharBuffer utf8buf = s.utf8_str();
+            const char *cp = utf8buf.data(); /* utf8_str not c_str: get raw UTF-8 bytes */
             char *s = (char *) ic_xmalloc(r->ic,
                                           strlen(cp) + 1,
                                           mark_cstring);

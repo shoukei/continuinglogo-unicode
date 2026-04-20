@@ -127,7 +127,8 @@ void wx_vprintf(IC *ic, const char *format, va_list ap) {
 
     vsnprintf(buf, len+1, format, ap);
 
-    wxString s(buf);
+    /* FromUTF8: treat buf as UTF-8, not locale encoding */
+    wxString s = wxString::FromUTF8(buf);
     free(buf);
 
     wxCommandEvent *printevent = new wxCommandEvent(PRINT_TEXT);
@@ -325,16 +326,34 @@ static void io_print_sexpr(IC *ic, printerf printer, sexpr *e) {
                    name_eq(e, ic->n_ne))
                     really_fullprint = 0;
 
-                /* Print out the name, adding backslashes before any
-                   characters that would otherwise terminate reading. */
-                for(i = 0; i < e->u.name.length; i++) {
-                  char ch = e->u.name.head[e->u.name.start+i];
-                  if(really_fullprint &&
-                     !isalnum(ch) &&
-                     !strchr("\":._?", ch))
-                      printer(ic, "\\");
-                  printer(ic, "%c", ch);
-              }
+                /* Print out the name, adding backslashes before ASCII
+                   characters that would otherwise terminate reading.
+                   Multi-byte UTF-8 sequences are always emitted intact:
+                   each character is printed as one "%.*s" call so that
+                   wx_vprintf / wxString::FromUTF8 always receives a
+                   complete, valid UTF-8 sequence rather than lone
+                   continuation bytes which FromUTF8 would discard. */
+                {
+                  unsigned int bi = 0;
+                  const char *base = e->u.name.head + e->u.name.start;
+                  while(bi < e->u.name.length) {
+                    unsigned char lead = (unsigned char)base[bi];
+                    int clen;
+                    if      (lead < 0x80)           clen = 1;
+                    else if ((lead & 0xE0) == 0xC0) clen = 2;
+                    else if ((lead & 0xF0) == 0xE0) clen = 3;
+                    else if ((lead & 0xF8) == 0xF0) clen = 4;
+                    else                            clen = 1;
+                    if(bi + (unsigned int)clen > e->u.name.length)
+                        clen = (int)(e->u.name.length - bi);
+                    if(really_fullprint && clen == 1 &&
+                       !isalnum(lead) &&
+                       !strchr("\":._?", (char)lead))
+                        printer(ic, "\\");
+                    printer(ic, "%.*s", clen, base + bi);
+                    bi += clen;
+                  }
+                }
             }
             break;
 
