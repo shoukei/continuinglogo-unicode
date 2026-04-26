@@ -773,8 +773,14 @@ void ContinuingLogoApp::OnChar(wxKeyEvent& event) {
     if(inputmode == CHARMODE) {
         if(uc != WXK_NONE) {
             /* If we're in charmode then we just send the keystroke
-               directly to the interpreter thread. */
-            queue.Post(wxString((char)uc));
+               directly to the interpreter thread.
+               We must NOT cast uc to char — that truncates multi-byte
+               Unicode codepoints (e.g. U+3042 "あ" becomes 0x42 "B").
+               Instead build a proper wxString from the codepoint and
+               post its UTF-8 encoding so the interpreter receives the
+               complete byte sequence. */
+            wxString charStr(static_cast<wxUniChar>(uc));
+            queue.Post(charStr);
         } else {
             /* This tells wxWidgets to continue processing the event
                as if we hadn't caught it. */

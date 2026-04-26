@@ -1003,10 +1003,10 @@ sexpr *readchar(logoreader *lr) {
 
     IC *ic = lr->ic;
     int ch;
-    char cch;
 
     ic->charmode_blocking(lr);
 
+    /* Read the first byte to determine the UTF-8 character width. */
     ch = lr->char_reader(lr);
 
     if(ch == EOF) {
@@ -1014,8 +1014,25 @@ sexpr *readchar(logoreader *lr) {
         goto end;
     }
 
-    cch = ch;
-    STORE(ic->g, NULL, ret, intern_len_static(ic, &cch, 0, 1));
+    {
+        unsigned char lead = (unsigned char)ch;
+        int clen;
+        if      (lead < 0x80)           clen = 1;
+        else if ((lead & 0xE0) == 0xC0) clen = 2;
+        else if ((lead & 0xF0) == 0xE0) clen = 3;
+        else if ((lead & 0xF8) == 0xF0) clen = 4;
+        else                            clen = 1; /* malformed: treat as 1 */
+
+        char buf[4];
+        int i;
+        buf[0] = (char)ch;
+        for(i = 1; i < clen; i++) {
+            int cb = lr->char_reader(lr);
+            if(cb == EOF) { clen = i; break; } /* truncated sequence */
+            buf[i] = (char)cb;
+        }
+        STORE(ic->g, NULL, ret, intern_len_static(ic, buf, 0, clen));
+    }
 
     end:
     unprotect_ptr(lr->ic->g);
@@ -1023,7 +1040,10 @@ sexpr *readchar(logoreader *lr) {
     return ret;
 }
 
-/* READCHARS reads a given number of bytes.
+/* READCHARS reads a given number of Unicode characters (not bytes).
+   Each multi-byte UTF-8 sequence is consumed and stored as a unit,
+   so count=1 on "あ" returns the full 3-byte sequence, just like
+   readchar does.
    Uses cbreak mode if we are reading from a terminal. */
 sexpr *readchars(logoreader *lr, int count) {
     protect_ptr(lr->ic->g, (void **)&lr);
@@ -1040,12 +1060,35 @@ sexpr *readchars(logoreader *lr, int count) {
     ic->charmode_blocking(lr);
 
     for(i = 0; i < count; i++) {
+        /* Read lead byte to determine character width. */
         ch = lr->char_reader(lr);
         if(ch == EOF) {
-            STORE(ic->g, NULL, ret, ic->g_nil);
+            /* Return whatever we have accumulated so far.
+               If nothing was read yet, return []. */
+            if(bb->used == 0)
+                STORE(ic->g, NULL, ret, ic->g_nil);
+            else
+                STORE(ic->g, NULL, ret, word_from_byte_buffer(ic, bb));
             goto end;
         }
-        add_to_byte_buffer(ic, bb, ch);
+        add_to_byte_buffer(ic, bb, (char)ch);
+
+        {
+            unsigned char lead = (unsigned char)ch;
+            int clen, j;
+            if      (lead < 0x80)           clen = 1;
+            else if ((lead & 0xE0) == 0xC0) clen = 2;
+            else if ((lead & 0xF0) == 0xE0) clen = 3;
+            else if ((lead & 0xF8) == 0xF0) clen = 4;
+            else                            clen = 1; /* malformed */
+
+            /* Read the continuation bytes for this character. */
+            for(j = 1; j < clen; j++) {
+                int cb = lr->char_reader(lr);
+                if(cb == EOF) break; /* truncated: stop here */
+                add_to_byte_buffer(ic, bb, (char)cb);
+            }
+        }
     }
 
     STORE(ic->g, NULL, ret, word_from_byte_buffer(ic, bb));
