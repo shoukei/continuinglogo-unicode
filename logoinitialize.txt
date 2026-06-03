@@ -330,22 +330,28 @@ to read_lines_readword
 end
 bury "read_lines_readword
 
+; Reads the entire input file, until an EOF, using READRAWLINE on each
+; line.  Returns a list of words, with one word per line, with no Logo
+; parsing applied (so dashes, brackets, etc. are preserved verbatim).
+to read_lines_readrawline
+    localmake "line readrawline
+    if :line = [] [output []]
+    output fput :line read_lines_readrawline
+end
+bury "read_lines_readrawline
+
 ; Runs :command and returns the result.
-; By default, the return value is a list of lists, with each
-; line read by READLIST.
-; If :wordflag is provided, regardless of value, then the result
-; is a list of words, with one word for each line in the output
-; of :command.
+; By default, the return value is a list of words, with each line read
+; by READRAWLINE so that filenames containing dashes, brackets, and
+; other Logo-special characters are returned intact.
+; If :wordflag is provided, the result is also a list of words (one per
+; line), identical to the default behaviour.
 to shell :command [:wordflag]
     localmake "oldreader reader
     local "result
     openshell "shellfile :command
     setread "shellfile
-    ifelse emptyp :wordflag [
-        make "result read_lines_readlist
-    ] [
-        make "result read_lines_readword
-    ]
+    make "result read_lines_readrawline
     setread :oldreader
     close "shellfile
     output :result
